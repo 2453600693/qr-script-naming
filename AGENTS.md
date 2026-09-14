@@ -204,6 +204,26 @@ python "$SK/rename_atomic.py" plan_rename.json --media "<原片目录>" --apply
 
 ## 顺序约定（最容易错的地方）
 
+### 先判断：用哪条定位路线
+
+**路线 A：目标行是空白的**（脚本内容和编号都要填）
+→ 脚本文档 + 顺序定位，`match_and_plan.py` 匹配后按脚本编号升序落到连续行。
+
+**路线 B：目标行已有脚本内容**（只缺原片编号）
+→ `locate_rows.py` 反查行号。运营提的需求（比如志良）早在表里占了行、脚本也填好了，
+我们后来才拍，这时只能回到那一行补编号，**不新建行、不删行**（删了会串）。
+
+```bash
+python "$SK/locate_rows.py" --url "<表格URL>" --sheet-id Amvc8S --range A170:N195 \
+    --asr work/asr_all.json --min-score 0.45 --out plan_located.json
+```
+
+- 它拿表格已有的脚本文案当锚点做匹配定位，**不会串行**；同脚本的多条原片自动归到同一行。
+- `existing_id` 为空 → `sheet_fill.py` 补编号；已有 → 直接 `rename_atomic.py` 改名。
+- **锚点范围要给够**，脚本可能在目标区块之外，范围小了会把命中误判成低分。
+
+下面的"行序=编号序"约定**只适用于路线 A**。
+
 第五、六步依赖一个约定：**plan 按脚本编号升序排列，表格行按同一顺序排布**，
 于是"第 `start_row + i` 行"对应"plan 第 i 条"。
 
