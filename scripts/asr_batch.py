@@ -66,6 +66,8 @@ def main():
                     help="中文字数低于此值视为被场记板干扰，触发补转")
     ap.add_argument("--model", default="small")
     ap.add_argument("--compute", default="int8")
+    ap.add_argument("--limit", type=int, default=0,
+                    help="每个目录只处理前 N 条，用于先小样本验证参数（0=全部）")
     args = ap.parse_args()
 
     if cache_ready(args.model):
@@ -84,7 +86,11 @@ def main():
         jobs.append((tag, src, os.path.join(args.work_dir, "audio_" + tag),
                      os.path.join(args.work_dir, "asr_%s.json" % tag)))
 
-    total = sum(len(media_files(s)) for _, s, _, _ in jobs)
+    def count(src):
+        fs = media_files(src)
+        return len(fs[:args.limit] if args.limit else fs)
+
+    total = sum(count(s) for _, s, _, _ in jobs)
     print("[加载模型] %s (%s, cpu) — 只加载这一次，共 %d 条待转写"
           % (args.model, args.compute, total))
     t0 = time.time()
@@ -98,6 +104,8 @@ def main():
     for tag, srcdir, audio, out in jobs:
         os.makedirs(audio, exist_ok=True)
         files = media_files(srcdir)
+        if args.limit:
+            files = files[:args.limit]
         res, retried = {}, 0
         print("\n[转写] %s (%d 条)" % (tag, len(files)))
         for i, f in enumerate(files, 1):

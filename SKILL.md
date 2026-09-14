@@ -70,6 +70,8 @@ python "$SK/probe_media.py" "<素材目录>" media.json
 python "$SK/fetch_script.py" "<脚本文档URL>" scripts.json --cache script_full.xml
 
 # 2) 听声音（可一次给多个目录）
+#    新一批素材先加 --limit 3 试跑，确认转出的正文对得上脚本，再去掉 limit 跑全部
+python "$SK/asr_batch.py" "<目录1>" "<目录2>" --work-dir work --limit 3
 python "$SK/asr_batch.py" "<目录1>" "<目录2>" --work-dir work
 
 # 3) 对号入座，产出对照表
@@ -187,6 +189,9 @@ python "$SK/match_and_plan.py" --scripts scripts.json --asr work/asr_all.json \
 ## 这几步不能省
 
 - **对照表人工过目**：文案相似的条目（同主题多版本）机器只给概率，判断要人做。
+- **写表前先在本地核对文案**：先把"准备写入的文案"和"脚本原文"并排打印比对一遍。
+  同名条目互相覆盖（MJ 和 FF 都叫"脚本01"）这类错误，只有这一步挡得住，dry-run 也只在碰巧打印时才看得见。
+- **ASR 先小样本试跑**：新一批素材先 `--limit 3`，参数不对就改，别一上来全量跑完才发现要重来。
 - **回滚清单**：改名不可逆，没有 `rollback.csv` 就得手工比对几百个 UUID。
 - **拍摄时间交叉验证**：唯一独立于 ASR 的第二证据源。只有语音一个维度支持时，错配察觉不到。
 - **写表后逐行回读**：多行文本字段最容易整体偏移，抽查会漏。
