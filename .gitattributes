@@ -1,0 +1,6 @@
+# 统一用 LF，避免 Windows / macOS 之间交换时换行混乱
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.zip binary
+*.mov binary
