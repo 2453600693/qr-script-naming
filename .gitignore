@@ -1,0 +1,21 @@
+# 运行中间产物（处理新素材时会生成在工作目录，不该进版本库）
+__pycache__/
+*.py[cod]
+work/
+media.json
+scripts*.json
+asr*.json
+plan*.json
+plan*.csv
+*rollback.csv
+write_map.json
+script_full.xml
+verify*.json
+对照表*.csv
+对照表*.md
+
+# 系统 / 编辑器
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
