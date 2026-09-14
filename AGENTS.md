@@ -83,7 +83,23 @@ python "$SK/asr_batch.py" "<目录1>" "<目录2>" --work-dir work
 # 对号入座
 python "$SK/match_and_plan.py" --scripts scripts.json --asr work/asr_<目录名>.json \
     --media "<原片目录>" --section "<章节>" --out plan.json
+
+# 素材池比脚本多时（同一条脚本拍了好几条原片）改用多对一：
+python "$SK/match_and_plan.py" --scripts scripts.json --asr work/asr_all.json \
+    --section MJ --mode match --min-score 0.45 --out plan.json
 ```
+
+**两种匹配模式别选错**：
+
+- `--mode assign`（默认）：素材数与脚本数相当，一一对应。内部用匈牙利算法做全局最优分配。
+- `--mode match`：素材明显多于脚本，要挑出属于这些脚本的。
+  匈牙利会强行一对一、把第二条原片挤掉，所以这里改成"每条素材取最高分脚本 + 阈值"，
+  同一条脚本可以落多条原片。输出里的 `[原片1/2]` 就是这条脚本的第 1 条原片、共 2 条。
+- 分数分界通常很干净（实测真匹配 ≥0.60、非匹配 ≤0.24），阈值取中间即可。
+
+**场记板会吞正文**：素材开头常有"三二一走"、"阿平四个开始"，会干扰解码。
+`asr_batch.py` 检测到中文字数过少时会自动补转后一段再取更长的结果，
+**不需要全量转写**。也别开批量推理或 `condition_on_previous_text=False`，短音频上都会丢正文。
 
 `match_and_plan.py` 会输出：
 
@@ -160,6 +176,13 @@ python "$SK/rename_atomic.py" plan_rename.json --media "<原片目录>" --apply
 
 ## 坑清单
 
+- **多个文档、甚至同一文档的不同章节可能有同名脚本条目**（MJ 和 FF 下都叫"脚本01"）。
+  `fetch_script.py` 生成的 `code` 必须带文档和章节前缀（`D1-MJ-脚本01`），
+  否则字典取值时后者覆盖前者，**填进表里的会是错的文案**。脚本已处理。
+- **素材扩展名不止 `.mov`**（还有 `.mp4`）。`asr_batch.py` 用原始媒体文件名做 key，
+  下游拿到的是真实文件名。不要在任何地方硬拼扩展名。
+- **一条脚本多条原片时，编号尾段是 `-1`、`-2`**，同一行可以写两个编号（换行分隔），
+  两个视频文件各自命名。
 - **Python 里调 lark-cli 要用 `shutil.which("lark-cli")`**：Windows 上它是 `.cmd` 包装，
   直接写 `["lark-cli", ...]` 会 FileNotFoundError。脚本内部已处理。
 - **lark-cli 的 `@file` 只接受「当前目录下的相对路径」**：写到系统临时目录（`tempfile`）会被拒，

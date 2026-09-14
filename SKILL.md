@@ -76,6 +76,10 @@ python "$SK/asr_batch.py" "<目录1>" "<目录2>" --work-dir work
 python "$SK/match_and_plan.py" --scripts scripts.json --asr work/asr_<目录名>.json \
     --media "<素材目录>" --section "<章节>" --out plan.json
 
+#    素材池比脚本多（同一条脚本拍了好几条原片）时换成多对一模式：
+python "$SK/match_and_plan.py" --scripts scripts.json --asr work/asr_all.json \
+    --section MJ --mode match --min-score 0.45 --out plan.json
+
 #    —— 把对照表发给用户确认，这一步不能省 ——
 
 # 4) 回填表格（用户确认后）
@@ -105,6 +109,8 @@ python "$SK/rename_atomic.py" plan_rename.json --media "<素材目录>" --apply
 4. **素材数 ≠ 脚本数**。缺拍、多拍、跨章节都正常。别按"数量相等"假设一一对应，也别按序号顺推。
 5. **文件名一律以表格为准**。表里 `I` 列写着 `26.9.14-MJ-192-1`，就用它，不要自己拼 `-192-1`、也不要顺推第四段。
 6. **对照表必须给用户过目**再说"已改好"。
+7. **素材开头常有场记板**（"三二一走"），会干扰解码把正文吞掉。`asr_batch.py` 会检测并自动补转后一段，
+   **不需要全量转写**。别开批量推理，也别传 `condition_on_previous_text=False`，两者在短音频上都会丢正文。
 
 ## 顺序约定（最容易错的地方）
 
@@ -130,9 +136,31 @@ python "$SK/rename_atomic.py" plan_rename.json --media "<素材目录>" --apply
 
 判断依据是表格 D 列（业务）。素材该归哪一组，看匹配出来的脚本类型（`xx劳纠` / `xx团购`）。
 
+### 一条脚本可能有多条原片
+
+机内素材很常见"同一条脚本拍了两三条"，这正是原片编号尾段（`-1`、`-2`）的来历。
+
+这时**不能用一对一匹配**：匈牙利算法会强行给每条脚本只配一条素材，把第二条原片挤成"未分配"。
+改用多对一：
+
+```bash
+python "$SK/match_and_plan.py" --scripts scripts.json --asr work/asr_all.json \
+    --section MJ --mode match --min-score 0.45 --out plan.json
+```
+
+- `--mode assign`（默认）：一批素材与一批脚本一一对应。
+- `--mode match`：素材池比脚本多，要挑出属于这些脚本的；同一条脚本可有多条原片，
+  低于 `--min-score` 的素材判为不属于本池子（比如目录里混着别的拍摄人的素材）。
+- 输出里 `[原片1/2]` 表示这是该脚本的第 1 条原片、共 2 条。
+- **怎么选模式**：素材数 ≈ 脚本数 → assign；素材数明显多于脚本数 → match。
+- 分数分界通常很干净（实测真匹配 ≥0.60、非匹配 ≤0.24），阈值取中间即可。
+
 ## 坑清单
 
 - **Python 里调 lark-cli 要 `shutil.which("lark-cli")`**：Windows 上它是 `.cmd` 包装，直接写 `["lark-cli", ...]` 会 FileNotFoundError。脚本已处理。
+- **多个文档、甚至同一文档的不同章节可能有同名脚本条目**（MJ 和 FF 下都叫"脚本01"）。
+  `fetch_script.py` 生成的 `code` 必须带文档和章节前缀（`D1-MJ-脚本01`），
+  否则字典取值时后者覆盖前者，**填进表里的会是错的文案**。脚本已处理。
 - **lark-cli 的 `@file` 只接受「当前目录下的相对路径」**：payload 写到系统临时目录（`tempfile`）会被拒，
   报 `invalid file path ... must be a relative path within the current directory`。
   必须写成工作目录下的相对文件名，用完删掉。脚本已处理。

@@ -70,13 +70,17 @@ def main():
     ap.add_argument("--start-row", type=int, default=None,
                     help="plan 里没有 row 字段时，从这一行开始顺序填")
     ap.add_argument("--plan", required=True)
-    ap.add_argument("--scripts", required=True, help="fetch_script.py 的输出，提供文案")
+    ap.add_argument("--scripts", default=None,
+                    help="fetch_script.py 的输出，按 code 提供文案；plan 里已带 text 时可省")
     ap.add_argument("--out-map", default="write_map.json")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
     plan = json.load(open(args.plan, encoding="utf-8-sig"))
-    scripts = {s["code"]: s["text"] for s in json.load(open(args.scripts, encoding="utf-8-sig"))}
+    scripts = {}
+    if args.scripts:
+        scripts = {s["code"]: s["text"]
+                   for s in json.load(open(args.scripts, encoding="utf-8-sig"))}
 
     if all("row" in p for p in plan):
         plan.sort(key=lambda p: p["row"])
@@ -89,10 +93,11 @@ def main():
     rows = []
     for i, p in enumerate(plan):
         row = p.get("row") or (args.start_row + i)
-        text = scripts.get(p["code"])
+        text = p.get("text") or scripts.get(p["code"])
         if not text:
-            sys.exit("scripts.json 里没有 %s 的文案" % p["code"])
-        rows.append((row, p["code"], text))
+            sys.exit("第%s行 %s 没有内容：plan 里没给 text，scripts.json 里也没有该 code"
+                     % (row, p.get("code", "?")))
+        rows.append((row, p.get("code", ""), text))
 
     # 切成连续段，逐段写入（行号有可能不连续）
     segs, cur = [], []
