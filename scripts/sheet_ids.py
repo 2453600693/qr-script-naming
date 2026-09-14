@@ -54,24 +54,32 @@ def main():
     ap.add_argument("--id-column", default="I")
     ap.add_argument("--sheet-column", default=None,
                     help="脚本内容列；给了就顺带校验该行脚本已填，没填会警告")
-    ap.add_argument("--start-row", type=int, required=True)
+    ap.add_argument("--start-row", type=int, default=None,
+                    help="plan 里没有 row 字段时用它推算行号")
     ap.add_argument("--plan", required=True)
     ap.add_argument("--out", default="plan_rename.json")
     ap.add_argument("--media", default=None, help="若 plan 里没有目录，用它补上")
     args = ap.parse_args()
 
     plan = json.load(open(args.plan, encoding="utf-8-sig"))
-    plan.sort(key=lambda p: p["code"])
+    # plan 自带 row 时以 row 为准（业务分派场景行序 ≠ 编号序）；
+    # 否则按脚本编号升序，与表格行的排布约定一致。
+    if all("row" in p for p in plan):
+        plan.sort(key=lambda p: p["row"])
+    elif args.start_row is not None:
+        plan.sort(key=lambda p: p["code"])
+    else:
+        sys.exit("plan 里没有 row 字段时必须给 --start-row")
 
     ic = args.id_column.upper()
-    end = args.start_row + len(plan) - 1
-    cols = "A%d:%s%d" % (args.start_row, ic, end)
+    need = [p.get("row") or (args.start_row + i) for i, p in enumerate(plan)]
+    cols = "A%d:%s%d" % (min(need), ic, max(need))
     rows = parse_rows(lark(["+csv-get", "--url", args.url, "--sheet-id", args.sheet_id,
                             "--range", cols])["data"]["annotated_csv"])
 
     out, problems = [], []
     for i, p in enumerate(plan):
-        row = args.start_row + i
+        row = need[i]
         vals = rows.get(row, [])
         idx = ord(ic) - ord("A")
         oid = (vals[idx] if len(vals) > idx else "").strip()
@@ -90,7 +98,7 @@ def main():
             item["dir"] = args.media
         out.append(item)
 
-    print("读取 %s%d:%s%d，共 %d 行" % (ic, args.start_row, ic, end, len(plan)))
+    print("读取 %s%d:%s%d，共 %d 行" % (ic, min(need), ic, max(need), len(plan)))
     for p in out:
         print("  第%-4d行  %-6s  %s  <- %s" % (p["row"], p["code"], p["new"], p["uuid8"]))
 

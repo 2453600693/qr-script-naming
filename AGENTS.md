@@ -146,10 +146,24 @@ python "$SK/rename_atomic.py" plan_rename.json --media "<原片目录>" --apply
 用户说"从第 192 行开始填"，含义是 192 行放第一条脚本、193 行放第二条，依次往下。
 动手前用 `sheet_probe.py` 看一眼目标行区间，确认那里是空的、且编号列已经排好号。
 
+### 业务分派：行序不等于编号序
+
+表格里不同业务占各自区块时（劳纠一片、团购一片），一批素材混着劳纠和团购，
+**不能按脚本编号顺序直接往下灌**——团购会落到劳纠的行上。用户常会提醒"团购要放到团购那里去"。
+
+做法：
+
+- 按脚本类型分组（`xx劳纠` / `xx团购`），**各组内**按编号升序排
+- 用 `sheet_probe.py` 数清表格 D 列（业务）每个区块有几行，核对素材数是否对得上
+- 给 plan 的每条加 `row` 字段，`sheet_fill.py` 和 `sheet_ids.py` 会以 `row` 为准，
+  并自动按段写入（跨组行号不连续也没关系）
+
 ## 坑清单
 
 - **Python 里调 lark-cli 要用 `shutil.which("lark-cli")`**：Windows 上它是 `.cmd` 包装，
   直接写 `["lark-cli", ...]` 会 FileNotFoundError。脚本内部已处理。
+- **lark-cli 的 `@file` 只接受「当前目录下的相对路径」**：写到系统临时目录（`tempfile`）会被拒，
+  报 `must be a relative path within the current directory`。写到工作目录下的相对文件名，用完删掉。脚本已处理。
 - **PowerShell 里 `@payload.json` 会被当 splatting**：写成 `--cells '@payload.json'`。
 - **`Out-File -Encoding utf8` 的 JSON 带 BOM**：python 一律用 `encoding="utf-8-sig"` 读。
 - **文案含引号和换行**：走 `+cells-set` 的 JSON payload，不要用 `+csv-put` 拼 CSV。

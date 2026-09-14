@@ -2,15 +2,20 @@
 """把脚本文案回填到飞书素材总表，并逐行回读校验。
 
 用法:
-    python sheet_fill.py --url "<表格URL>" --sheet-id Amvc8S --column F --start-row 192 \
-        --plan plan_办公室.json --scripts scripts.json --dry-run
-    # 去掉 --dry-run 正式写
+    # 顺序填（plan 按脚本编号排列，从 start-row 往下）
+    python sheet_fill.py --url "<表URL>" --sheet-id Amvc8S --column F --start-row 192 \
+        --plan plan.json --scripts scripts.json --dry-run
+
+    # 按 plan 自带的 row 填（业务分派场景：劳纠和团购分别落到各自的区块）
+    python sheet_fill.py --url "<表URL>" --sheet-id Amvc8S --column F \
+        --plan plan_assign.json --scripts scripts.json --dry-run
 
 规矩（都是踩过的坑）：
 - 先读后写：先 +workbook-info 拿 sheet_id，读表头确认"脚本内容"是哪一列。
 - 先 --dry-run 看落区，再真写。
 - 写完逐行回读比对，不抽查。多行文本最容易整体偏移。
 - 走 +cells-set 的 JSON payload，不走 +csv-put，避免 CSV 转义把整块写错位。
+- plan 自带 row 时以 row 为准：业务分派下"行序"不等于"脚本编号序"。
 """
 import argparse
 import csv
@@ -21,7 +26,6 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 
 # Windows 上 lark-cli 是 .cmd 包装，必须用 which 解析出真实路径
 CLI = shutil.which("lark-cli") or "lark-cli"
@@ -63,8 +67,9 @@ def main():
     ap.add_argument("--url", required=True)
     ap.add_argument("--sheet-id", required=True)
     ap.add_argument("--column", required=True, help="写入的列字母，如 F")
-    ap.add_argument("--start-row", type=int, required=True)
-    ap.add_argument("--plan", required=True, help="match_and_plan.py 的输出，按顺序逐行填")
+    ap.add_argument("--start-row", type=int, default=None,
+                    help="plan 里没有 row 字段时，从这一行开始顺序填")
+    ap.add_argument("--plan", required=True)
     ap.add_argument("--scripts", required=True, help="fetch_script.py 的输出，提供文案")
     ap.add_argument("--out-map", default="write_map.json")
     ap.add_argument("--dry-run", action="store_true")
@@ -73,44 +78,60 @@ def main():
     plan = json.load(open(args.plan, encoding="utf-8-sig"))
     scripts = {s["code"]: s["text"] for s in json.load(open(args.scripts, encoding="utf-8-sig"))}
 
-    col = args.column.upper()
-    start, end = args.start_row, args.start_row + len(plan) - 1
-    rng = "%s%d:%s%d" % (col, start, col, end)
+    if all("row" in p for p in plan):
+        plan.sort(key=lambda p: p["row"])
+    elif args.start_row is not None:
+        plan.sort(key=lambda p: p["code"])
+    else:
+        sys.exit("plan 里没有 row 字段时必须给 --start-row")
 
-    rows, cells, wm = [], [], []
+    col = args.column.upper()
+    rows = []
     for i, p in enumerate(plan):
-        row = start + i
+        row = p.get("row") or (args.start_row + i)
         text = scripts.get(p["code"])
         if not text:
             sys.exit("scripts.json 里没有 %s 的文案" % p["code"])
         rows.append((row, p["code"], text))
-        cells.append([{"value": text}])
-        wm.append({"row": row, "code": p["code"], "value": text,
-                   "id": p.get("id", "")})
 
-    print("准备写入 %s!%s：%d 行（第 %d 到 %d 行）" % (args.sheet_id, rng, len(rows), start, end))
-    for row, code, text in rows[:3]:
-        print("  第%d行 %s: %s ..." % (row, code, text.replace("\n", " / ")[:52]))
-    print("  ...")
-    for row, code, text in rows[-1:]:
-        print("  第%d行 %s: %s ..." % (row, code, text.replace("\n", " / ")[:52]))
+    # 切成连续段，逐段写入（行号有可能不连续）
+    segs, cur = [], []
+    for r in rows:
+        if cur and r[0] == cur[-1][0] + 1:
+            cur.append(r)
+        else:
+            if cur:
+                segs.append(cur)
+            cur = [r]
+    if cur:
+        segs.append(cur)
+
+    print("准备写入 %s!%s 列：%d 行，分 %d 段" % (args.sheet_id, col, len(rows), len(segs)))
+    for r, code, text in rows:
+        print("  第%-4d行 %-6s %s ..." % (r, code, text.replace("\n", " / ")[:44]))
 
     if args.dry_run:
         print("\n--dry-run：不写入。确认落区不会盖到相邻数据后，去掉 --dry-run 正式写。")
         return
 
-    fd, payload = tempfile.mkstemp(suffix=".json")
-    os.close(fd)
-    json.dump(cells, open(payload, "w", encoding="utf-8"), ensure_ascii=False)
-    try:
-        res = lark(["+cells-set", "--url", args.url, "--sheet-id", args.sheet_id,
-                    "--range", rng, "--cells", "@" + payload])
-        print("写入返回: %s" % json.dumps(res.get("data", res), ensure_ascii=False))
-    finally:
-        os.remove(payload)
+    for seg in segs:
+        rng = "%s%d:%s%d" % (col, seg[0][0], col, seg[-1][0])
+        cells = [[{"value": t}] for _, _, t in seg]
+        # lark-cli 的 @file 只接受「当前目录下的相对路径」，
+        # 用 tempfile 写到系统临时目录会被拒（unsafe/absolute path not allowed）。
+        payload = "._sheet_payload_%d.json" % os.getpid()
+        json.dump(cells, open(payload, "w", encoding="utf-8"), ensure_ascii=False)
+        try:
+            res = lark(["+cells-set", "--url", args.url, "--sheet-id", args.sheet_id,
+                        "--range", rng, "--cells", "@" + payload])
+            print("写入 %s -> %s" % (rng, json.dumps(res.get("data", res), ensure_ascii=False)))
+        finally:
+            if os.path.exists(payload):
+                os.remove(payload)
 
     # 逐行回读：读 A 列到目标列，取每行最后一个字段
-    got = parse_rows(read_range(args.url, args.sheet_id, "A%d:%s%d" % (start, col, end)))
+    lo, hi = rows[0][0], rows[-1][0]
+    got = parse_rows(read_range(args.url, args.sheet_id, "A%d:%s%d" % (lo, col, hi)))
     ok = bad = 0
     for row, code, text in rows:
         val = got.get(row, [])
@@ -123,12 +144,13 @@ def main():
                 row, code, text.replace("\n", " / ")[:60], actual.replace("\n", " / ")[:60]))
     print("\n回读校验：一致 %d 条，不一致 %d 条" % (ok, bad))
 
+    wm = [{"row": r, "code": c, "value": t} for r, c, t in rows]
     json.dump(wm, open(args.out_map, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     print("写入映射: " + args.out_map)
 
     if bad:
         sys.exit("存在不一致，请人工核对后再继续下一步")
-    print("全部一致。若接下来要按表编号重命名视频，可用 plan 里的 row 生成编号。")
+    print("全部一致。下一步可用 sheet_ids.py 读表里的原片编号生成改名方案。")
 
 
 if __name__ == "__main__":
