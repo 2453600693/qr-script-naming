@@ -105,7 +105,7 @@ def main():
     else:
         print("全部就绪，可以直接开工。")
     print()
-    print("下一步: 按 AGENTS.md 开头的\"开工三行\"向用户收集信息。")
+    print("下一步: 按 AGENTS.md 开头的\"开工四行\"向用户收集信息。")
 
 
 if __name__ == "__main__":
