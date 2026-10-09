@@ -110,6 +110,12 @@ python "$SK/sheet_ids.py" --url "<表格URL>" --sheet-id <sheetId> --id-column I
 # 6) 改名：先预演，再执行
 python "$SK/rename_atomic.py" plan_rename.json --media "<素材目录>"
 python "$SK/rename_atomic.py" plan_rename.json --media "<素材目录>" --apply
+
+# 7) 可选：把改好名的素材传到飞书云盘（用户要求时才做）
+python "$SK/upload_to_drive.py" --root "<拍摄原片文件夹URL>" \
+    --dirs "<本地目录1>" "<本地目录2>" --dry-run
+python "$SK/upload_to_drive.py" --root "<拍摄原片文件夹URL>" \
+    --dirs "<本地目录1>" "<本地目录2>"
 ```
 
 选 B（脚本编号_文案首句）命名时，跳过第 5 步，直接拿 `plan.json` 走第 6 步。
@@ -229,6 +235,33 @@ python "$SK/match_and_plan.py" --scripts scripts.json --asr work/asr_all.json \
 
 **序号段**：表格行号。**尾数段**：该脚本的原片总数。
 
+## 上传到飞书云盘（可选收尾）
+
+改完文件名后可以顺手把素材传上云盘。路径规则是**照现有结构**：
+
+```
+云盘 > 拍摄原片 > {YYYY}年拍摄素材 > {M}月{D}日
+```
+
+```bash
+python "$SK/upload_to_drive.py" --root "<拍摄原片文件夹URL>" \
+    --dirs "<本地目录1>" "<本地目录2>" --dry-run
+```
+
+- **日期跟着编号走，不跟着"今天"走**：`26.9.14-*` 的素材就进「9月14日」，
+  哪怕今天是 10 月某天。脚本从文件名编号段取众数推断；`--date YYYY-MM-DD` 可强制指定。
+- 年份／日期文件夹不存在会自动创建，命名格式与现有一致。
+- **同名文件一律跳过，绝不覆盖**云盘已有文件。
+- **只传不删**：本地文件一个不动，清理本地由用户自己决定。
+- 上传后回读校验，缺了直接报错。
+
+**前置条件**：
+
+- 需要 `space:document:retrieve`（列文件夹内容）、`space:folder:create`（建文件夹）、
+  `drive:file:upload`（上传）。缺了先 `lark-cli auth login --scope "<缺失的>"`。
+- 「拍摄原片」可能是**共享文件夹**，不在个人云盘根目录，`files list` 列不到，
+  直接问用户要该文件夹 URL，从 `/drive/folder/<token>` 里取 token。
+
 ## 表格各列怎么来的（整行都能自己填）
 
 编号一旦定了，一行里大部分列都是它的派生数据，不用用户手打：
@@ -271,9 +304,7 @@ python "$SK/learn_people.py" --url "<表格URL>" --sheet-id Amvc8S --out people.
 
 目录名跟模特名不一致时（如 `律师10`），要问用户这个目录是谁的。
 
-### 写模特名之前，先确保它在下拉列表里
-
-模特列通常是固定列表下拉（`type=list`）。拿目录名当模特名写进去之前，
+### 写模特名之前，先确保它在下拉列表里模特列通常是固定列表下拉（`type=list`）。拿目录名当模特名写进去之前，
 **先确认这个名字在选项里**，否则会落成无效值。缺了就用工具补：
 
 ```bash

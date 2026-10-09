@@ -229,6 +229,22 @@ python "$SK/rename_atomic.py" plan_rename.json --media "<原片目录>" --apply
 6. **对照表必须给用户过目**，确认后才动文件。
 7. **改名一定先预演**，执行后保留 `rollback.csv`。
 
+## 可选收尾：上传到飞书云盘
+
+路径规则照现有结构：`云盘 > 拍摄原片 > {YYYY}年拍摄素材 > {M}月{D}日`
+
+```bash
+python "$SK/upload_to_drive.py" --root "<拍摄原片文件夹URL>" \
+    --dirs "<本地目录1>" "<本地目录2>" --dry-run   # 先看
+# 去掉 --dry-run 正式传
+```
+
+- **日期跟编号走，不跟"今天"走**：`26.9.14-*` 进「9月14日」，今天是几号不影响。
+  脚本从文件名编号段取众数推断，`--date YYYY-MM-DD` 可强制。
+- 文件夹不存在会自动建；**同名一律跳过，不覆盖**；**只传不删**。
+- 需要 `space:document:retrieve` + `space:folder:create` + `drive:file:upload` 三个权限。
+- 「拍摄原片」常是共享文件夹，个人云盘根目录列不到，**问用户要该文件夹 URL** 取 token。
+
 ## 顺序约定（最容易错的地方）
 
 ### 先判断：用哪条定位路线
