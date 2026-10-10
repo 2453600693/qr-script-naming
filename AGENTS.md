@@ -246,6 +246,18 @@ python "$SK/upload_to_drive.py" --root "<拍摄原片文件夹URL>" \
 - 需要 `space:document:retrieve` + `space:folder:create` + `drive:file:upload` 三个权限。
 - 「拍摄原片」常是共享文件夹，个人云盘根目录列不到，**问用户要该文件夹 URL** 取 token。
 
+**缺权限时怎么授权（别踩这个坑）**：**不要**直接跑 `lark-cli auth login --scope "xxx"` ——
+不加 `--no-wait` 它会阻塞等待用户授权（最长 10 分钟），AI 工具超时后把它丢到后台，看起来像报错，
+其实只是在等。正确三步：
+
+```bash
+lark-cli auth login --scope "<缺失的 scope>" --no-wait --json     # 1) 拿链接，立即返回
+# 2) 把 verification_url 原样发给用户（配合 lark-cli auth qrcode 生成二维码），结束本轮等回复
+lark-cli auth login --device-code <device_code>                   # 3) 用户确认后收尾
+```
+
+**同一个 scope 别连着跑两次**——第二次会作废第一次的 device_code，用户刚扫的码立刻失效。
+
 ## 顺序约定（最容易错的地方）
 
 ### 先判断：用哪条定位路线

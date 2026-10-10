@@ -267,9 +267,33 @@ python "$SK/upload_to_drive.py" --root "<拍摄原片文件夹URL>" \
 **前置条件**：
 
 - 需要 `space:document:retrieve`（列文件夹内容）、`space:folder:create`（建文件夹）、
-  `drive:file:upload`（上传）。缺了先 `lark-cli auth login --scope "<缺失的>"`。
+  `drive:file:upload`（上传）。缺了按下节的方式补授权。
 - 「拍摄原片」可能是**共享文件夹**，不在个人云盘根目录，`files list` 列不到，
   直接问用户要该文件夹 URL，从 `/drive/folder/<token>` 里取 token。
+
+### 缺权限时怎么授权（别踩这个坑）
+
+**不要**直接跑 `lark-cli auth login --scope "xxx"`。不加 `--no-wait` 它会**阻塞等待**用户在浏览器
+完成授权，最长 10 分钟；AI 工具的调用超时后会把进程丢到后台，看起来像报错，其实它只是在等。
+
+正确三步：
+
+```bash
+# 1) 拿链接，立即返回
+lark-cli auth login --scope "space:document:retrieve" --no-wait --json
+#    输出里有 verification_url 和 device_code
+
+# 2) 把 verification_url 原样发给用户（同时用 lark-cli auth qrcode 生成二维码一起展示），
+#    让用户尽快扫码授权。链接 10 分钟内有效，过期要重新发起。
+
+# 3) 用户回来说"授权完成了"之后，用 device_code 收尾
+lark-cli auth login --device-code <device_code>
+```
+
+**两条纪律**：
+
+- **同一个 scope 别连着跑两次**：第二次会作废第一次的 device_code，用户刚扫的码立刻失效。
+- **拿到链接就结束本轮**，不要在同一轮里接着阻塞跑 `--device-code`，否则用户根本看不到链接。
 
 ## 表格各列怎么来的（整行都能自己填）
 
