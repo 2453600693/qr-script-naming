@@ -113,6 +113,32 @@ def scan_local(dirs, prefix):
     return found
 
 
+def resolve_day(root_token, year_name, day_name, dry):
+    """定位日期文件夹。
+
+    root 可能是「拍摄原片」那一层（下面是年份文件夹），
+    也可能用户直接给了年份那一层（下面直接就日期文件夹）。
+    按顺序自动判断，不要写死层级——写死会多建一层「2026年拍摄素材」。
+    """
+    dirs = [f for f in list_all(root_token) if f.get("type") == "folder"]
+
+    hit = next((f for f in dirs if f.get("name") == day_name), None)
+    if hit:
+        print("   日期文件夹已存在：%s（就在给定位置下）" % day_name)
+        return hit["token"]
+
+    year = next((f for f in dirs if f.get("name") == year_name), None)
+    if year:
+        print("   找到年份文件夹：%s" % year_name)
+        return ensure_folder(year["token"], day_name, dry)[0]
+
+    print("   给定位置下既没有日期文件夹也没有年份文件夹，按「拍摄原片」层处理")
+    year_tok, _ = ensure_folder(root_token, year_name, dry)
+    if year_tok is None:
+        return None
+    return ensure_folder(year_tok, day_name, dry)[0]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", required=True, help="「拍摄原片」文件夹的 URL 或 token")
@@ -139,11 +165,7 @@ def main():
     day_name = "%d月%d日" % (mo, d)
     print("目标路径：拍摄原片 / %s / %s   （日期来源：%s）" % (year_name, day_name, src))
 
-    year_tok, _ = ensure_folder(root, year_name, args.dry_run)
-    if year_tok is None:
-        print("（dry-run：年份文件夹还不存在，先不继续）")
-        return
-    day_tok, _ = ensure_folder(year_tok, day_name, args.dry_run)
+    day_tok = resolve_day(root, year_name, day_name, args.dry_run)
     if day_tok is None:
         print("（dry-run：日期文件夹还不存在，先不继续）")
         return
@@ -170,8 +192,15 @@ def main():
     for i, name in enumerate(todo, 1):
         path = local[name]
         size = os.path.getsize(path) / 1024 / 1024
-        d, err = api(["drive", "+upload", "--folder-token", day_tok,
-                      "--file", path, "--name", name])
+        # lark-cli 的 --file 只接受「当前目录下的相对路径」，
+        # 传绝对路径会报 unsafe file path。上传前切到文件所在目录，用完切回来。
+        cwd = os.getcwd()
+        try:
+            os.chdir(os.path.dirname(path))
+            d, err = api(["drive", "+upload", "--folder-token", day_tok,
+                          "--file", os.path.basename(path), "--name", name])
+        finally:
+            os.chdir(cwd)
         if err:
             fail.append((name, err))
             print("  [%d/%d] 失败 %s -> %s" % (i, len(todo), name, err))
