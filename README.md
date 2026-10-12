@@ -73,6 +73,21 @@ qr-script-naming/
 每天处理新素材时，把中间产物（`work/`、`*.json`、`*.csv`）丢在工作目录就行，
 它们不该进版本库，`.gitignore` 已经排除了。
 
+## 更新
+
+```powershell
+# Windows
+& "$env:USERPROFILE\.claude\skills\qr-script-naming\update.ps1"
+```
+
+```bash
+# macOS / Linux
+bash ~/.claude/skills/qr-script-naming/update.sh
+```
+
+或者直接在 AI 里说「qr-script-naming 更新一下，pull 完重新读 SKILL.md」。
+**更新后必须重启 AI 工具**，skill 是启动时加载的。
+
 ## 它靠什么保证不出错
 
 视频文件名里没有任何语义，UUID 名和文件系统时间戳都是噪声。真正的锚点是**声音本身**。
