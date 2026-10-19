@@ -60,7 +60,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", required=True)
     ap.add_argument("--sheet-id", required=True)
-    ap.add_argument("--range", required=True, help="锚点区域，如 A170:N195")
+    ap.add_argument("--range", default=None,
+                    help="锚点区域，如 A170:N195；不传则扫全表（A1:N2000），"
+                         "这样不管脚本属于哪个拍摄人都能命中")
     ap.add_argument("--asr", required=True, help="asr_batch.py 的输出")
     ap.add_argument("--text-column", default="F", help="已有脚本文案的列")
     ap.add_argument("--id-column", default="I", help="原片编号列")
@@ -73,7 +75,9 @@ def main():
 
     tc, ic, wc = col_idx(args.text_column), col_idx(args.id_column), col_idx(args.who_column)
     anchors = []
-    for row, f in read_rows(args.url, args.sheet_id, args.range):
+    scan_range = args.range or "A1:N2000"
+    print("扫描范围：%s%s" % (scan_range, "" if args.range else "（全表）"))
+    for row, f in read_rows(args.url, args.sheet_id, scan_range):
         while len(f) <= max(tc, ic, wc):
             f.append("")
         if not f[tc].strip():
@@ -115,10 +119,25 @@ def main():
 
     plan.sort(key=lambda p: (p["row"], p["rank"]))
     print("定位成功 %d 条：" % len(plan))
+    ambiguous = []
     for p in plan:
-        print("  第%-3d行 [%s] %-20s 第%d/%d条  %.3f  该行现有编号=%s" % (
+        tail = ""
+        if p.get("second"):
+            r2, s2 = p["second"]
+            gap = p["score"] - s2
+            tail = "   次优=第%d行 %.3f" % (r2, s2)
+            if gap < 0.08:
+                tail += "  <== 分差仅 %.2f，需人工确认" % gap
+                ambiguous.append(p)
+        print("  第%-4d行 [%s] %-20s 第%d/%d条 %.3f%s  该行编号=%s" % (
             p["row"], p["who"] or "?", p["old"][:20], p["rank"], p["of"],
-            p["score"], p["existing_id"] or "(空)"))
+            p["score"], tail, p["existing_id"] or "(空)"))
+
+    if ambiguous:
+        print("\n有 %d 条命中同一脚本的多处历史行，请确认该落哪一行：" % len(ambiguous))
+        for p in ambiguous:
+            print("  %-20s -> 第%d行(%.3f) vs 第%d行(%.3f)" % (
+                p["old"][:20], p["row"], p["score"], p["second"][0], p["second"][1]))
 
     if weak:
         print("\n没能定位 %d 条：" % len(weak))
