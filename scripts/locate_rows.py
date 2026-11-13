@@ -8,6 +8,12 @@
     python locate_rows.py --url "<表格URL>" --sheet-id Amvc8S --range A170:N195 \
         --asr work/asr_all.json --min-score 0.45 --out plan_located.json
 
+铁律：已经有「最终视频成品」的行一律不动。
+    这些行是已交付的内容，脚本文案照样能当锚点参考，但默认不会被命中——
+    命中并把编号/文案写回去，会打乱成品与原片的对应关系，而且不可逆。
+    确实要覆盖时显式加 --allow-finished，并且应当先问过用户。
+    同理，第 1 行表头不参与锚点。
+
 输出 plan.json，可直接喂给 sheet_fill.py（补编号）或 rename_atomic.py（改名）。
 """
 import argparse
@@ -25,6 +31,8 @@ from match_and_plan import body, score   # 复用同一套归一化与滑窗相�
 
 CLI = shutil.which("lark-cli") or "lark-cli"
 CJK = re.compile(r"[\u4e00-\u9fff]")
+# 成品列识别：表头里带这两个词就算
+FINISH_WORDS = ("最终视频成品", "成品", "成片")
 
 
 def lark(args):
@@ -34,7 +42,7 @@ def lark(args):
                        encoding="utf-8", errors="ignore", env=env)
     if r.returncode != 0:
         sys.exit("lark-cli 失败:\n" + (r.stderr or r.stdout))
-    return json.loads(r.stdout)
+    return json.loads(r.stdout.lstrip("\ufeff"))
 
 
 def col_idx(letter):
@@ -56,6 +64,20 @@ def read_rows(url, sid, rng):
     return out
 
 
+def find_finish_cols(header):
+    """按表头找出所有「成品」相关列的索引。
+
+    实测表头是 K=成片时间、L=最终视频成品。只认「成品」会漏掉只填了成片时间的情况，
+    所以两个词都收，任一非空就视为该行已交付。
+    """
+    idxs = []
+    for i, name in enumerate(header):
+        n = (name or "").strip()
+        if any(w in n for w in FINISH_WORDS):
+            idxs.append(i)
+    return idxs
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", required=True)
@@ -67,6 +89,11 @@ def main():
     ap.add_argument("--text-column", default="F", help="已有脚本文案的列")
     ap.add_argument("--id-column", default="I", help="原片编号列")
     ap.add_argument("--who-column", default="A", help="需求创建人列")
+    ap.add_argument("--finish-column", default=None,
+                    help="成品列字母，如 L；不传则按表头自动识别（推荐）")
+    ap.add_argument("--allow-finished", action="store_true",
+                    help="允许命中已有最终成品的行。默认禁止——那会打乱已交付的成品")
+    ap.add_argument("--header-row", type=int, default=1, help="表头行号，默认 1")
     ap.add_argument("--min-score", type=float, default=0.45)
     ap.add_argument("--only-empty-id", action="store_true",
                     help="只考虑编号列为空的行（补编号场景）")
@@ -74,20 +101,47 @@ def main():
     args = ap.parse_args()
 
     tc, ic, wc = col_idx(args.text_column), col_idx(args.id_column), col_idx(args.who_column)
-    anchors = []
     scan_range = args.range or "A1:N2000"
     print("扫描范围：%s%s" % (scan_range, "" if args.range else "（全表）"))
-    for row, f in read_rows(args.url, args.sheet_id, scan_range):
-        while len(f) <= max(tc, ic, wc):
+
+    rows = read_rows(args.url, args.sheet_id, scan_range)
+
+    if args.finish_column:
+        finish_cols = [col_idx(args.finish_column)]
+    else:
+        header = next((f for r, f in rows if r == args.header_row), [])
+        finish_cols = find_finish_cols(header)
+        if finish_cols:
+            names = ["%s(%s)" % (chr(65 + i) if i < 26 else "?", (header[i] or "").strip())
+                     for i in finish_cols]
+            print("成品列：%s -> %s" % (
+                " ".join(names),
+                "允许命中" if args.allow_finished else "有值的行一律不动"))
+        else:
+            print("警告：表头里没认出成品列，无法保护已交付的行。"
+                  "建议用 --finish-column 显式指定（如 L）")
+
+    anchors, skipped_finished = [], 0
+    for row, f in rows:
+        if row == args.header_row:
+            continue
+        while len(f) <= max([tc, ic, wc] + finish_cols):
             f.append("")
         if not f[tc].strip():
+            continue
+        if not args.allow_finished and any(f[i].strip() for i in finish_cols):
+            skipped_finished += 1
             continue
         if args.only_empty_id and f[ic].strip():
             continue
         anchors.append({"row": row, "who": f[wc].strip(), "text": f[tc].strip(),
                         "id": f[ic].strip(), "raw": f})
+
+    if skipped_finished:
+        print("已跳过 %d 行：这些行已有最终成品，不动" % skipped_finished)
     if not anchors:
-        sys.exit("锚点区域里没有可用的脚本文案，检查 --range 和 --text-column")
+        sys.exit("锚点区域里没有可用的脚本文案，检查 --range 和 --text-column；"
+                 "若全表都已有成品，说明这批素材应当新开行（走 match_and_plan.py 路线 A）")
 
     asr = json.load(open(args.asr, encoding="utf-8-sig"))
     print("锚点行 %d 个，待定位原片 %d 条\n" % (len(anchors), len(asr)))

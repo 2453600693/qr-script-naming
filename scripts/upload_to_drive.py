@@ -1,20 +1,27 @@
 #!/usr/bin/env python3
 """把本地已命名的原片素材上传到飞书云盘。
 
-路径约定（照现有结构）：云盘 > 拍摄原片 > {YYYY}年拍摄素材 > {M}月{D}日
-日期文件夹不存在会自动创建，命名格式与现有一致。
+云盘现有结构（照现有习惯，不自己发明层级）：
+    拍摄原片 > {YYYY}年拍摄素材 > {M}月{D}日 > 原片
+注意：日期文件夹一律 `M月D日` 且不补零（如 11月3日，不是 11月03日）。
 
 用法:
     # 先看要传哪些，不写
-    python upload_to_drive.py --root "<拍摄原片文件夹URL或token>" \
-        --dirs "D:\\原片素材\\9.14\\梁思思" "D:\\原片素材\\9.14\\蓝蓝" --dry-run
+    python upload_to_drive.py --root "<文件夹URL或token>" --dirs "D:\\原片素材\\9.14\\梁思思" --dry-run
 
     # 真传
-    python upload_to_drive.py --root "<...>" --dirs "..." "..."
+    python upload_to_drive.py --root "<...>" --dirs "..."
+
+--root 给哪一层都行，脚本先认清它自己的身份再决定往哪放：
+    - 给的是「日期」层且与素材日期一致  -> 直接传进这一层，一个文件夹都不建
+    - 给的是「日期」层但与素材日期不符  -> 报错停下，别在别人日期文件夹里套娃
+    - 给的是「年份」层                  -> 在这一层里找/建日期文件夹
+    - 给的是「拍摄原片」层或其他上层    -> 找/建年份层，再找/建日期层
 
 设计原则：
+- 绝不重复建层：能复用现有文件夹就复用，名字按现有习惯匹配（含等价写法）
 - 只传「本地有、云盘没有」的，同名一律跳过，绝不覆盖云盘已有文件
-- 不删本地任何东西（要清理本地由用户自己决定）
+- 不删本地任何东西，也不删云盘任何东西
 - 上传后回读校验，缺了就报错
 """
 import argparse
@@ -32,6 +39,19 @@ MEDIA_EXT = (".mov", ".mp4", ".m4v", ".avi", ".mkv")
 TOKEN_IN_URL = re.compile(r"/(?:drive/)?folder/([A-Za-z0-9]+)")
 DATE_IN_NAME = re.compile(r"^(\d{2})\.(\d{1,2})\.(\d{1,2})-")
 
+# 日期文件夹的各种写法都认，统一归一到 (月, 日)
+DAY_PATTERNS = [
+    re.compile(r"^(\d{1,2})月(\d{1,2})[日号]$"),
+    re.compile(r"^(\d{1,2})[.\-](\d{1,2})$"),
+    re.compile(r"^(\d{4})[.\-年](\d{1,2})[.\-月](\d{1,2})日?$"),
+]
+YEAR_PATTERNS = [
+    re.compile(r"^(\d{4})年拍摄素材$"),
+    re.compile(r"^(\d{4})年.(?:拍摄)?素材$"),
+    re.compile(r"^(\d{4})年$"),
+    re.compile(r"^(\d{4})$"),
+]
+
 
 def date_from_names(names):
     """从文件名里的编号段推日期，如 26.9.14-MJ-182-1.mov -> (2026, 9, 14)。
@@ -46,7 +66,6 @@ def date_from_names(names):
         if m:
             c[(2000 + int(m.group(1)), int(m.group(2)), int(m.group(3)))] += 1
     if not c:
-        import datetime
         t = datetime.date.today()
         return t.year, t.month, t.day
     return c.most_common(1)[0][0]
@@ -58,7 +77,7 @@ def api(args):
     r = subprocess.run([CLI] + args, capture_output=True, text=True,
                        encoding="utf-8", errors="ignore", env=env)
     try:
-        return json.loads(r.stdout), None
+        return json.loads(r.stdout.lstrip("\ufeff")), None
     except Exception:
         err = (r.stderr or r.stdout or "").strip().replace("\n", " ")
         return None, err[:300]
@@ -73,7 +92,7 @@ def list_all(token):
         d, err = api(["drive", "files", "list", "--params", json.dumps(params)])
         if err:
             sys.exit("列出文件夹失败: " + err)
-        data = d.get("data") or {}
+        data = (d or {}).get("data") or {}
         out += data.get("files") or []
         page = data.get("next_page_token")
         n += 1
@@ -82,9 +101,97 @@ def list_all(token):
     return out
 
 
+def folders_of(token):
+    return [f for f in list_all(token) if f.get("type") == "folder"]
+
+
+def inspect_folder(token, raw_url=None):
+    """认清一个文件夹自身的名字与类型——这是不重复建层的前提。"""
+    url = raw_url or ("https://www.feishu.cn/drive/folder/%s" % token)
+    d, err = api(["drive", "+inspect", "--url", url])
+    if err:
+        return {}
+    data = (d or {}).get("data") or {}
+    return {"title": (data.get("title") or "").strip(),
+            "type": (data.get("type") or "").strip(),
+            "token": data.get("token") or token}
+
+
+def parse_day(name):
+    """把各种写法的日期文件夹名归一成 (月, 日)，认不出返回 None。"""
+    s = (name or "").strip()
+    for i, p in enumerate(DAY_PATTERNS):
+        m = p.match(s)
+        if not m:
+            continue
+        if i == 2:                       # 带年写法，只取月日
+            return int(m.group(2)), int(m.group(3))
+        return int(m.group(1)), int(m.group(2))
+    return None
+
+
+def parse_year(name):
+    """把各种写法的年份文件夹名归一成 2026 这样的整数，认不出返回 None。"""
+    s = (name or "").strip()
+    for p in YEAR_PATTERNS:
+        m = p.match(s)
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def day_style(names):
+    """从现有日期文件夹名里学写法，别硬编码一种。
+
+    实测「2026年拍摄素材」下 96 个文件夹清一色 `M月D日` 且不补零，
+    但换个空间可能就是 `M.D`。学它的写法，生成的名字才能跟旁边对齐。
+    """
+    for n in names:
+        if re.match(r"^\d{1,2}月\d{1,2}[日号]$", n or ""):
+            return "cn"
+        if re.match(r"^\d{1,2}[.\-]\d{1,2}$", n or ""):
+            return "dot" if "." in n else "dash"
+    return "cn"
+
+
+def make_day_name(mo, d, style):
+    if style == "dot":
+        return "%d.%d" % (mo, d)
+    if style == "dash":
+        return "%d-%d" % (mo, d)
+    return "%d月%d日" % (mo, d)
+
+
+def make_year_name(y, existing):
+    """年份文件夹也照现有写法：2026年拍摄素材 / 2026年素材 / 2026。"""
+    for n in existing:
+        if parse_year(n) == y:
+            return n
+    for n in existing:
+        m = re.match(r"^(\d{4})(.*)$", n or "")
+        if m:
+            return "%d%s" % (y, m.group(2))
+    return "%d年拍摄素材" % y
+
+
+def find_day(folders, mo, d):
+    for f in folders:
+        pd = parse_day(f.get("name"))
+        if pd == (mo, d):
+            return f
+    return None
+
+
+def find_year(folders, y):
+    for f in folders:
+        if parse_year(f.get("name")) == y:
+            return f
+    return None
+
+
 def ensure_folder(parent, name, dry):
-    for f in list_all(parent):
-        if f.get("type") == "folder" and f.get("name") == name:
+    for f in folders_of(parent):
+        if f.get("name") == name:
             return f["token"], False
     if dry:
         print("   [dry-run] 需要创建文件夹：%s" % name)
@@ -96,6 +203,56 @@ def ensure_folder(parent, name, dry):
            or (d.get("data") or {}).get("folder_token"))
     print("   已创建文件夹：%s" % name)
     return tok, True
+
+
+def resolve_day(root_token, raw_url, y, mo, d, dry):
+    """认清 root 是日期层 / 年份层 / 还是更上层，再决定日期文件夹落哪。
+
+    root 本身就是目标日期层时直接返回它自己，一个文件夹都不建。
+    早期版本无条件把 root 当「拍摄原片」层，会在用户给出的「11月13日」里
+    再建「2026年拍摄素材/11月13日」，纯属套娃。
+    """
+    info = inspect_folder(root_token, raw_url)
+    title = info.get("title", "")
+    target = (mo, d)
+    folders = folders_of(root_token)
+
+    root_day = parse_day(title)
+    if root_day:
+        if root_day == target:
+            print("   给定位置本身就是目标日期文件夹「%s」，直接上传到这一层" % title)
+            return root_token
+        sys.exit(
+            "给定文件夹是「%s」，与素材编号推出的日期「%d月%d日」不一致。\n"
+            "  要么把 --root 换成 %d月%d日 那一层，要么换成它上层的「拍摄原片」或年份文件夹。"
+            % (title, mo, d, mo, d))
+
+    style = day_style([f.get("name") for f in folders])
+    day_name = make_day_name(mo, d, style)
+
+    hit = find_day(folders, mo, d)
+    if hit:
+        print("   日期文件夹已存在：%s（就在给定位置下）" % hit["name"])
+        return hit["token"]
+
+    root_year = parse_year(title)
+    if root_year:
+        print("   给定位置是年份文件夹「%s」" % title)
+        if root_year != y:
+            print("   注意：年份与素材日期 %d 年不一致，仍按给定位置处理" % y)
+        return ensure_folder(root_token, day_name, dry)[0]
+
+    year = find_year(folders, y)
+    if year:
+        print("   找到年份文件夹：%s" % year["name"])
+        return ensure_folder(year["token"], day_name, dry)[0]
+
+    print("   给定位置下既没有目标日期文件夹也没有年份文件夹，按上层处理")
+    year_name = make_year_name(y, [f.get("name") for f in folders])
+    year_tok, _ = ensure_folder(root_token, year_name, dry)
+    if year_tok is None:
+        return None
+    return ensure_folder(year_tok, day_name, dry)[0]
 
 
 def scan_local(dirs, prefix):
@@ -113,37 +270,12 @@ def scan_local(dirs, prefix):
     return found
 
 
-def resolve_day(root_token, year_name, day_name, dry):
-    """定位日期文件夹。
-
-    root 可能是「拍摄原片」那一层（下面是年份文件夹），
-    也可能用户直接给了年份那一层（下面直接就日期文件夹）。
-    按顺序自动判断，不要写死层级——写死会多建一层「2026年拍摄素材」。
-    """
-    dirs = [f for f in list_all(root_token) if f.get("type") == "folder"]
-
-    hit = next((f for f in dirs if f.get("name") == day_name), None)
-    if hit:
-        print("   日期文件夹已存在：%s（就在给定位置下）" % day_name)
-        return hit["token"]
-
-    year = next((f for f in dirs if f.get("name") == year_name), None)
-    if year:
-        print("   找到年份文件夹：%s" % year_name)
-        return ensure_folder(year["token"], day_name, dry)[0]
-
-    print("   给定位置下既没有日期文件夹也没有年份文件夹，按「拍摄原片」层处理")
-    year_tok, _ = ensure_folder(root_token, year_name, dry)
-    if year_tok is None:
-        return None
-    return ensure_folder(year_tok, day_name, dry)[0]
-
-
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--root", required=True, help="「拍摄原片」文件夹的 URL 或 token")
+    ap.add_argument("--root", required=True,
+                    help="目标文件夹 URL 或 token；日期层/年份层/「拍摄原片」层都行")
     ap.add_argument("--dirs", nargs="+", required=True, help="本地素材目录（会递归扫描）")
-    ap.add_argument("--date", default=None, help="YYYY-MM-DD，默认今天")
+    ap.add_argument("--date", default=None, help="YYYY-MM-DD，默认从文件名编号段推断")
     ap.add_argument("--prefix", default="26.", help="已命名素材的文件名前缀")
     ap.add_argument("--limit", type=int, default=0, help="最多传几个（0=全部）")
     ap.add_argument("--dry-run", action="store_true")
@@ -161,11 +293,9 @@ def main():
     else:
         y, mo, d = date_from_names(local)
         src = "从文件名编号段推断"
-    year_name = "%d年拍摄素材" % y
-    day_name = "%d月%d日" % (mo, d)
-    print("目标路径：拍摄原片 / %s / %s   （日期来源：%s）" % (year_name, day_name, src))
+    print("目标日期：%d年%d月%d日   （来源：%s）" % (y, mo, d, src))
 
-    day_tok = resolve_day(root, year_name, day_name, args.dry_run)
+    day_tok = resolve_day(root, args.root, y, mo, d, args.dry_run)
     if day_tok is None:
         print("（dry-run：日期文件夹还不存在，先不继续）")
         return
